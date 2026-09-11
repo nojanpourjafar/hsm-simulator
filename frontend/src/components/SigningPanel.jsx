@@ -73,7 +73,7 @@ export default function SigningPanel({ keys, onSign, loading }) {
           disabled={loading || keys.length === 0}
           className="btn btn-primary"
         >
-          {loading ? 'Signing...' : 'Sign with HSM'}
+          {loading ? 'Press the button on the Arduino...' : 'Sign on device'}
         </button>
       </form>
 

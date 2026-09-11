@@ -86,6 +86,7 @@ function send(cmd, timeout = 4000) {
         } catch {
           return; // not for us, keep listening
         }
+        if (msg.status === 'confirm') return; // board is waiting on the button, keep waiting too
         clearTimeout(timer);
         parser.off('data', onLine);
         resolve(msg);
@@ -106,9 +107,9 @@ function send(cmd, timeout = 4000) {
   return p;
 }
 
-async function forward(res, cmd) {
+async function forward(res, cmd, timeout) {
   try {
-    const r = await send(cmd);
+    const r = await send(cmd, timeout);
     res.status(r.error ? 400 : 200).json(r);
   } catch (e) {
     res.status(503).json({ error: e.message });
@@ -150,7 +151,8 @@ app.post('/api/hsm/sign', (req, res) => {
   if (message.length > 99 || /["\\\n]/.test(message)) {
     return res.status(400).json({ error: 'message: max 99 chars, no quotes or backslashes' });
   }
-  forward(res, { type: 'sign', key_id, message });
+  // signing waits for a button press on the board, give it longer
+  forward(res, { type: 'sign', key_id, message }, 14000);
 });
 
 app.get('/api/hsm/keys', (req, res) => forward(res, { type: 'list_keys' }));

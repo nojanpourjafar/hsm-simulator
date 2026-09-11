@@ -13,6 +13,9 @@
 //   pin 7 (WP)           -> GND
 //   pin 8 (VCC)          -> 5V
 //
+// Button between D2 and GND (internal pullup), LED on D3 through 220R to GND.
+// LED off = locked, on = unlocked, blinking = press the button to approve a signature.
+//
 // Needs the "Crypto" library by Rhys Weatherley (Library Manager).
 
 #include <Wire.h>
@@ -25,6 +28,9 @@
 #define MAX_KEYS   16
 #define MAGIC      0x5A
 #define KDF_ROUNDS 2000
+#define BTN_PIN    2
+#define LED_PIN    3
+#define CONFIRM_MS 10000
 
 // internal eeprom: [0] magic, [1..32] sha256 of the master password
 // external eeprom, one 64 byte slot per key:
@@ -122,6 +128,37 @@ void err(const __FlashStringHelper *msg) {
   Serial.println(F("\"}"));
 }
 
+// ---- button + led ----------------------------------------------------------
+
+void showLocked() { digitalWrite(LED_PIN, unlocked ? HIGH : LOW); }
+
+// blink and wait for a press. false if nobody presses in time.
+bool waitForConfirm() {
+  // if the button is already held down from before, wait for it to let go
+  while (digitalRead(BTN_PIN) == LOW) {}
+
+  unsigned long start = millis(), lastBlink = 0;
+  bool on = false;
+
+  while (millis() - start < CONFIRM_MS) {
+    if (millis() - lastBlink > 150) {
+      on = !on;
+      digitalWrite(LED_PIN, on);
+      lastBlink = millis();
+    }
+    if (digitalRead(BTN_PIN) == LOW) {
+      delay(30);                                  // debounce
+      if (digitalRead(BTN_PIN) == LOW) {
+        while (digitalRead(BTN_PIN) == LOW) {}    // wait for release
+        showLocked();
+        return true;
+      }
+    }
+  }
+  showLocked();
+  return false;
+}
+
 // ---- password handling -----------------------------------------------------
 
 // stretch the password a bit so brute forcing the stored hash is slower.
@@ -197,6 +234,7 @@ void cmdInit() {
   memcpy(masterKey, candidate, 32);
   memset(candidate, 0, 32);
   unlocked = true;
+  showLocked();
   Serial.println(F("{\"status\":\"unlocked\"}"));
 }
 
@@ -243,6 +281,10 @@ void cmdSign() {
 
   int8_t slot = findSlot(id);
   if (slot < 0) { err(F("key not found")); return; }
+
+  // tell the host we're waiting, then make the human press the button
+  Serial.println(F("{\"status\":\"confirm\"}"));
+  if (!waitForConfirm()) { err(F("rejected")); return; }
 
   uint8_t enc[32], key[32], sig[32];
   extRead(slot * SLOT_SIZE + 17, enc, 32);
@@ -297,6 +339,7 @@ void cmdWipe() {
   EEPROM.update(0, 0);
   memset(masterKey, 0, 32);
   unlocked = false;
+  showLocked();
   Serial.println(F("{\"status\":\"wiped\"}"));
 }
 
@@ -315,6 +358,9 @@ void handle() {
 void setup() {
   Serial.begin(9600);
   Wire.begin();
+  pinMode(BTN_PIN, INPUT_PULLUP);
+  pinMode(LED_PIN, OUTPUT);
+  showLocked();
   delay(500);
   Serial.println(F("{\"status\":\"hsm_ready\",\"platform\":\"Arduino Uno\"}"));
 }

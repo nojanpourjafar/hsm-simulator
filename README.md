@@ -28,7 +28,7 @@ When you send a password it hashes it with sha256 like 2000 times to turn it int
 
 Private keys get encrypted with AES-256 using the master key and written to an external eeprom chip (24LC256, it's like $2). Each key gets a 64 byte slot: 1 byte for "is this slot used", 16 bytes for a name, 32 bytes of encrypted key.
 
-When you ask it to sign, it finds the slot by name, reads the 32 encrypted bytes, decrypts them into a buffer, does HMAC-SHA256 over your message with that key, then zeros the buffer. The plaintext key exists for a few milliseconds and never goes near the serial port.
+When you ask it to sign, it finds the slot by name, then blinks the LED and waits for you to physically press the button on the breadboard. If you don't press it within 10 seconds it says no. If you do, it reads the 32 encrypted bytes, decrypts them into a buffer, does HMAC-SHA256 over your message with that key, then zeros the buffer. The plaintext key exists for a few milliseconds and never goes near the serial port.
 
 If you unplug the board, RAM is gone, master key is gone, it's locked again.
 
@@ -47,6 +47,8 @@ Just a react page with a password box, a form to add a key, and a form to sign a
 - Arduino Uno
 - 24LC256 eeprom, the DIP-8 one (8 pins)
 - 2x 4.7k resistors for the i2c pullups
+- a pushbutton (for approving signatures)
+- an LED and a 220 ohm resistor
 - breadboard and some jumper wires
 
 ## wiring
@@ -62,6 +64,12 @@ chip pin        goes to
 7 (WP)          GND
 8 (VCC)         5V
 ```
+
+Button: one leg to D2, other leg to GND. The Uno's internal pullup handles the rest.
+
+LED: long leg to D3, short leg through the 220 ohm resistor to GND.
+
+The LED means: off = locked, on = unlocked, blinking = it's waiting for you to press the button.
 
 ## getting it running
 
@@ -97,12 +105,12 @@ Limits are 16 keys, 15 character names, 99 character messages. Those numbers are
 I want to be upfront about this because I learned most of it while building it.
 
 - Real wallets sign with ECDSA on secp256k1, that's what bitcoin and ethereum actually verify. That's way too slow and too big for an Uno so I used HMAC-SHA256 instead. It proves the same thing (the key never leaves the device) but you couldn't send one of these signatures to an actual blockchain.
-- The usb link is plain text. If someone has your laptop and your password they can ask for signatures. A real ledger has a screen and buttons so you confirm on the device itself.
+- The usb link is plain text. The button helps (nothing gets signed unless someone physically presses it) but there's no screen, so you're trusting that the message the laptop sent is the one you meant to sign. A real ledger shows it to you on the device.
 - No lockout on wrong passwords, so you could brute force it over serial, slowly.
 - AES is in ECB mode which is normally a bad idea. I think it's ok here because the thing being encrypted is 32 random bytes with no pattern in it, but I'm not a cryptographer.
 - The Uno has no secure element. Anyone with a programmer can dump the eeprom and attack the password hash on a real computer.
 
-If I did it again on an ESP32 I'd do proper secp256k1 signing, add a button you have to press to approve each signature, and encrypt the link to the computer.
+If I did it again on an ESP32 I'd do proper secp256k1 signing, add a little OLED so you can see what you're approving, and encrypt the link to the computer.
 
 ## layout
 

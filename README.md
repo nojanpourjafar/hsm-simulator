@@ -1,130 +1,113 @@
-# Arduino Uno HSM
+# arduino hsm
 
-A small hardware security module built on an Arduino Uno. Private keys are stored
-AES-256 encrypted on an external 24LC256 EEPROM, unlocked with a master password,
-and used to sign messages with HMAC-SHA256. The plaintext key only ever exists in
-the Uno's RAM for the few milliseconds it takes to sign, and it never goes back
-out over USB.
+my attempt at building a hardware wallet type thing on an Arduino Uno.
 
-There's a Node.js bridge that talks to the board over serial and a React page
-for storing keys and requesting signatures.
+## what this is
 
-```
-React page  --HTTP-->  Node bridge  --USB serial-->  Arduino Uno  --I2C-->  24LC256
-                                                     (AES, HMAC)            (encrypted keys)
-```
+Basically the idea is that if you keep a crypto private key on your laptop, anything on your laptop can read it. Hardware wallets (ledger, trezor etc) fix this by keeping the key on a separate device that can *sign* stuff but will never actually hand the key over. I wanted to see if I could build the same idea myself with what I had, which was an Uno and not much else.
 
-## Why an Uno
+So this is what it does:
 
-I only had an Uno. It has 2 KB of RAM and 32 KB of flash, so the firmware has to
-be careful: no JSON library, all string literals kept in flash with `F()`, keys
-handled as raw bytes instead of hex strings wherever possible. Getting SHA-256,
-AES-256 and an I2C EEPROM driver to fit comfortably was most of the work.
+- you plug the Uno into your mac over usb
+- you type a master password in a web page, that unlocks the board
+- you can give it private keys and it stores them encrypted on a little memory chip
+- you can ask it to sign a message with one of those keys and it sends the signature back
+- there is no command to get a key back out. that's kind of the whole point
 
-## Parts
+I'm a first year ECE student so this is more of a learning project than something you'd actually trust with money. See the "stuff that's not great" section at the bottom.
 
-| Part | Notes |
-|------|-------|
-| Arduino Uno | |
-| 24LC256 EEPROM (DIP-8) | 32 KB, I2C, about $2 |
-| 2 x 4.7 kΩ resistors | I2C pull-ups |
-| Breadboard + jumpers | |
+## how it actually works
 
-### Wiring
+There's three parts and honestly the hardest bit was getting them to talk to each other.
 
-```
-24LC256 pin   ->  Uno
-1,2,3 (A0-A2) ->  GND        (sets address 0x50)
-4 (GND)       ->  GND
-5 (SDA)       ->  A4   + 4.7k to 5V
-6 (SCL)       ->  A5   + 4.7k to 5V
-7 (WP)        ->  GND
-8 (VCC)       ->  5V
-```
+**the arduino (firmware/arduino_hsm.ino)**
 
-The notch/dot on the chip marks pin 1.
+This is where all the important stuff happens. It reads one line of json at a time over serial, figures out what you asked for, and prints one line of json back. I didn't use a json library because the Uno only has 32KB of flash and the ones I looked at were huge, so it just does `strstr` for `"key_id":"` and copies chars until the next quote. Kind of jank but it works and it's tiny.
 
-## Setup
+When you send a password it hashes it with sha256 like 2000 times to turn it into a 32 byte key. That key is the "master key" and it only ever lives in RAM. The board saves a hash of that key in its own internal eeprom so next time it can check if the password you typed is right, without actually storing the key anywhere.
 
-**Firmware**
+Private keys get encrypted with AES-256 using the master key and written to an external eeprom chip (24LC256, it's like $2). Each key gets a 64 byte slot: 1 byte for "is this slot used", 16 bytes for a name, 32 bytes of encrypted key.
 
-1. Arduino IDE > Library Manager > install **Crypto** by Rhys Weatherley.
-2. Open `firmware/arduino_hsm.ino`, select Arduino Uno and its port, upload.
-3. Open Serial Monitor at 9600 baud. You should see `{"status":"hsm_ready",...}`.
-   Type `{"type":"status"}` and check `"eeprom":true` — if it's false the wiring is off.
-4. Close Serial Monitor before running the backend (only one program can hold the port).
+When you ask it to sign, it finds the slot by name, reads the 32 encrypted bytes, decrypts them into a buffer, does HMAC-SHA256 over your message with that key, then zeros the buffer. The plaintext key exists for a few milliseconds and never goes near the serial port.
 
-**Backend**
+If you unplug the board, RAM is gone, master key is gone, it's locked again.
+
+**the node server (backend/server.js)**
+
+A browser can't open a serial port so this sits in the middle. It finds the arduino automatically (on mac it shows up as /dev/cu.usbmodem something), forwards http requests to it as serial lines, and waits for the reply. One thing I learned is that the Uno can only handle one command at a time, so if the web page sends two things at once it gets confused. The server queues them so they go one after the other.
+
+Also opening the serial port resets the Uno, so the server waits for the board to print its "ready" line before it lets anything through.
+
+**the web page (frontend/)**
+
+Just a react page with a password box, a form to add a key, and a form to sign a message. Nothing fancy. It never sees a private key, it only knows the *names* of the keys on the board.
+
+## parts
+
+- Arduino Uno
+- 24LC256 eeprom, the DIP-8 one (8 pins)
+- 2x 4.7k resistors for the i2c pullups
+- breadboard and some jumper wires
+
+## wiring
+
+The notch/dot on the chip is pin 1. Going counterclockwise:
 
 ```
-cd backend
-npm install
-npm start
+chip pin        goes to
+1, 2, 3         GND      (these set the i2c address to 0x50)
+4               GND
+5 (SDA)         A4       + 4.7k up to 5V
+6 (SCL)         A5       + 4.7k up to 5V
+7 (WP)          GND
+8 (VCC)         5V
 ```
 
-It scans for the board automatically. If it picks the wrong port, run
-`HSM_PORT=/dev/cu.usbmodem1101 npm start` (or whatever `ls /dev/cu.*` shows on macOS).
+## getting it running
 
-**Frontend**
+1. In the Arduino IDE install the "Crypto" library by Rhys Weatherley from the library manager. That's where the SHA256 and AES come from.
+2. Open firmware/arduino_hsm.ino, pick Arduino Uno and your port, upload.
+3. Open the serial monitor at 9600 baud with "newline" selected and send `{"type":"status"}`. You want to see `"eeprom":true`. If it says false the chip isn't wired right.
+4. Close the serial monitor. Only one program can use the port at a time.
+5. `cd backend && npm install && npm start`. Wait for it to say `arduino ready`.
+6. In another terminal `cd frontend && npm install && npm run build`.
+7. Go to http://localhost:3001
+
+If the server grabs the wrong port you can force it with `HSM_PORT=/dev/cu.usbmodem1101 npm start`.
+
+## the serial commands
+
+if you want to poke at it directly from the serial monitor:
 
 ```
-cd frontend
-npm install
-npm run build
+{"type":"init","password":"whatever123"}
+{"type":"store_key","key_id":"test","private_key":"<64 hex chars>"}
+{"type":"sign","key_id":"test","message":"hello"}
+{"type":"list_keys"}
+{"type":"status"}
+{"type":"wipe"}        <- erases everything including the password
 ```
-
-Then open http://localhost:3001. The backend serves the built page.
-
-## Serial protocol
-
-One JSON object per line, one reply per line.
-
-| Command | Reply |
-|---------|-------|
-| `{"type":"init","password":"..."}` | `{"status":"unlocked"}` — sets the password on first use, verifies it afterwards |
-| `{"type":"store_key","key_id":"eth_main","private_key":"<64 hex>"}` | `{"status":"stored","key_id":"eth_main"}` |
-| `{"type":"sign","key_id":"eth_main","message":"..."}` | `{"status":"signed","key_id":"eth_main","signature":"<64 hex>"}` |
-| `{"type":"list_keys"}` | `{"keys":["eth_main"]}` |
-| `{"type":"status"}` | `{"status":"online","unlocked":false,"initialized":true,"eeprom":true,...}` |
-| `{"type":"wipe"}` | `{"status":"wiped"}` — erases keys and password |
 
 Errors come back as `{"error":"..."}`.
 
-## How the storage works
+Limits are 16 keys, 15 character names, 99 character messages. Those numbers are mostly because of RAM (the Uno has 2KB, total).
 
-- The master password is hashed with SHA-256 and re-hashed 2000 times to get a
-  32-byte master key. A hash of *that* is saved in the Uno's internal EEPROM so
-  the board can check the password later without storing the key itself.
-- Each private key (32 bytes) is encrypted with AES-256 under the master key and
-  written to a 64-byte slot on the 24LC256 along with a 15-char ID.
-- On `sign`, the slot is read, decrypted into RAM, used for HMAC, and zeroed.
-- Power cycling the board locks it again; the master key is only ever in RAM.
+## stuff that's not great
 
-Limits: 16 key slots, 15-char IDs, 99-char messages.
+I want to be upfront about this because I learned most of it while building it.
 
-## Known limitations
+- Real wallets sign with ECDSA on secp256k1, that's what bitcoin and ethereum actually verify. That's way too slow and too big for an Uno so I used HMAC-SHA256 instead. It proves the same thing (the key never leaves the device) but you couldn't send one of these signatures to an actual blockchain.
+- The usb link is plain text. If someone has your laptop and your password they can ask for signatures. A real ledger has a screen and buttons so you confirm on the device itself.
+- No lockout on wrong passwords, so you could brute force it over serial, slowly.
+- AES is in ECB mode which is normally a bad idea. I think it's ok here because the thing being encrypted is 32 random bytes with no pattern in it, but I'm not a cryptographer.
+- The Uno has no secure element. Anyone with a programmer can dump the eeprom and attack the password hash on a real computer.
 
-This is a learning project, not a real Ledger.
+If I did it again on an ESP32 I'd do proper secp256k1 signing, add a button you have to press to approve each signature, and encrypt the link to the computer.
 
-- HMAC-SHA256 isn't what blockchains use for transaction signatures; that would
-  be ECDSA on secp256k1, which is too slow/large for an Uno to do well. HMAC
-  demonstrates the same "sign inside the device" property.
-- The USB serial link is plaintext, so someone with your laptop and your password
-  can request signatures. That's the same threat model as any USB hardware wallet
-  without a screen for confirmation.
-- Password check has no lockout, so it's brute-forceable over serial (slowly).
-- AES is used in ECB mode. That's acceptable here only because the plaintext is
-  32 bytes of random key material with no structure to leak.
-- The Uno has no secure element; anyone with a programmer can dump the EEPROM
-  and attack the password hash offline.
-
-Things I'd do on an ESP32: proper secp256k1 signing, a button to confirm each
-signature, and encrypting the host link.
-
-## Layout
+## layout
 
 ```
-firmware/arduino_hsm.ino    Uno sketch
-backend/server.js           express + serialport bridge
-frontend/src/               React UI
+firmware/arduino_hsm.ino    the sketch
+backend/server.js           express + serialport
+frontend/src/               react
 ```
